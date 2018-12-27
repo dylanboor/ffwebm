@@ -1,73 +1,45 @@
 using System;
 using System.Diagnostics;
+using System.Collections;
+using System.Collections.Generic;
 
 public class ffwebm
 {
-	string inFile, bitRate, aBitRate, startT, finishT, outFile;
-    bool validInput, useSS;
-    int argLen;
+	string inFile, bitRate, aBitRate, startT, finishT, outFile, scaleRatio, qualityCoef;
+    bool validInput, useSS, scaling, usingCRF;
 	
 	public ffwebm(string[] args) {
 		// Initialize bools as false
 		validInput = false;
 		useSS = false;
-		
-        argLen = args.Length;
+        scaling = false;
+        usingCRF = false;
         SetArgs(args);
 	}
 	
     static void Main(string[] args) {
-		/*  // Output the args
-		foreach (string s in args) {
-            System.Console.WriteLine(s);
-        }
-		*/
+        Console.WriteLine("\nFormat is: ffwebm inputfile bitrate audiobitrate [-vf scale=XPixels:-1] [-ss start finish] [outputfile]\n");
         ffwebm webmObj = new ffwebm(args);
         webmObj.Transcode();
     }
-   
+    
     private void SetArgs(string[] args) {
-		if (argLen != 0) {
+        List<string> argList = removeOptionalFlags(args);
+        int argLen = argList.Count;
+		if (3 <= argLen && argLen <= 4) { // 3 or 4
             try {
-				if (args[0].Equals("-ss")) {
-					useSS = true;
-					
-					inFile = args[1];
-					bitRate = args[2];
-					aBitRate = args[3];
-					startT = args[4];
-					finishT = args[5];
-						
-					if (argLen == 6) {
-						validInput = true;
-						outFile = args[1] + ".webm";
-					}
-					else if (argLen == 7) {
-						validInput = true;	
-						outFile = args[6] + ".webm";
-					}
-					else {
-						PrintArgError();
-					}
-					
-				}
-				else {  // If no -ss and re-encoding whole file
-					inFile = args[0];
-					bitRate = args[1];
-					aBitRate = args[2];
-						
-					if (argLen == 3) {
-						validInput = true;
-						outFile = args[0] + ".webm";
-					}
-					else if (argLen == 4) {
-						validInput = true;	
-						outFile = args[3] + ".webm";
-					}
-					else {
-						PrintArgError();
-					}
-				}
+                inFile = argList[0].Replace("[", "`[").Replace("]", "`]");
+                bitRate = argList[1];
+                aBitRate = argList[2];
+                    
+                if (argLen == 3) {
+                    validInput = true;
+                    outFile = inFile + ".webm";
+                }
+                else if (argLen == 4) {
+                    validInput = true;	
+                    outFile = argList[3].Replace("[", "`[").Replace("]", "`]") + ".webm";
+                }
             } catch (Exception e) {
                 Console.WriteLine(e.Message);
                 Console.WriteLine("There was an error binding the arguments as strings.");
@@ -77,10 +49,76 @@ public class ffwebm
         }
 	}
 
-	private void PrintArgError() {
+	
+    private List<string> removeOptionalFlags(string[] args) {
+        // Handle optional flags, removing related args
+        List<string> argList = new List<string>();
+        foreach(string element in args) {
+            argList.Add(element);
+        }
+
+        int i = 0;
+        while (i < argList.Count) {
+            switch(argList[i]) {
+                case "-ss":
+                    useSS = true;
+                    startT = argList[i+1];
+                    finishT = argList[i+2];
+
+                    argList.Remove(argList[i]);
+                    argList.Remove(argList[i]);
+                    argList.Remove(argList[i]);
+                    break;
+                case "-vf":
+                    scaling = true;
+                    scaleRatio = argList[i+1];
+                    argList.Remove(argList[i]);
+                    argList.Remove(argList[i]);
+                    break;
+                case "-crf":
+                    usingCRF = true;
+                    qualityCoef = argList[i+1];
+                    argList.Remove(argList[i]);
+                    argList.Remove(argList[i]);
+                    break;
+                default:
+                    i++;
+                    break;
+            }
+        }
+        return argList;
+    }
+
+    private string setFFMPEGInput() {
+        List<string> ffmpegArgsList = new List<string>();
+        if (useSS) {
+            ffmpegArgsList.Add("-ss " + startT + " -i \"" + inFile + "\" -to " + finishT + " -metadata title=\"encoded@" + bitRate + "," + aBitRate + ", " + startT + " to " + finishT + " from " + inFile + "\"");
+        } else {
+            ffmpegArgsList.Add("-i \"" + inFile + "\" -metadata title=\"encoded@" + bitRate + "," + aBitRate + " from " + inFile + "\"");
+        }
+        if (usingCRF) {
+            ffmpegArgsList.Add("-crf " + qualityCoef);
+        } else {
+            ffmpegArgsList.Add("-crf 4 -qmin 0 -qmax 30");
+        }
+
+        ffmpegArgsList.Add("-c:v libvpx -b:v " + bitRate + " -c:a libopus -b:a " + aBitRate + " -preset ultrafast -copyts -start_at_zero -sn -y -threads 4");
+
+        if (scaling) {
+            ffmpegArgsList.Add("-vf " + scaleRatio);
+        }
+
+        ffmpegArgsList.Add("-f webm \"" + outFile + "\"");
+
+        string retVal = "";
+        foreach(string entry in ffmpegArgsList) {
+            retVal+="" + entry + " ";
+        }
+        return retVal;
+    }
+    private void PrintArgError() {
 		Console.WriteLine("ffwebm error - invalid arguments.");
-		Console.WriteLine("Format is: ffwebm -ss inputfile bitrate audiobitrate start finish [outputfile]");
-        Console.WriteLine("       or: ffwebm inputfile bitrate audiobitrate [outputfile]");
+		Console.WriteLine("Format is: ffwebm inputfile bitrate audiobitrate [-vf scale=XPixels:-1] [-ss start finish] [outputfile]");
 	}
 
 	public void Transcode() {
@@ -88,52 +126,55 @@ public class ffwebm
             Console.WriteLine("Input was invalid, exiting.");
             Environment.Exit(1);
         } else {
-            string ffmpegArgs;
-
-            if (!useSS) {	// If encoding entire file duration
-                // Can't estimate because can't get file duration
-                ffmpegArgs = "-i \"" + inFile + "\" -c:v libvpx-vp9 -crf 0 -b:v " + bitRate + " -c:a libopus -b:a " + aBitRate + " -preset ultrafast -copyts -sn -y -threads 4 -metadata title=\"encoded@" + bitRate + "," + aBitRate + ",crf0\" -f webm \"" + outFile + "\"";
-            } else {
-                //EstimateFor8MB();
-				ffmpegArgs = "-ss " + startT + " -i \"" + inFile + "\" -to " + finishT + " -c:v libvpx -crf 0 -b:v " + bitRate + " -c:a libopus -b:a " + aBitRate + " -preset ultrafast -copyts -start_at_zero -sn -y -threads 4 -metadata title=\"encoded@" + bitRate + "," + aBitRate + ",crf0 " + startT + " to " + finishT + " from " + inFile + "\" -f webm \"" + outFile + "\"";
+            string ffmpegInput = setFFMPEGInput();
+            try
+            {
+                var p = new Process();
+                Console.WriteLine("ffmpeg " + ffmpegInput);
+                p.StartInfo = new ProcessStartInfo(@"ffmpeg.exe", ffmpegInput)
+                {
+                    UseShellExecute = false     //Used to run in same cmd prompt
+                };
+                p.Start();
+                p.WaitForExit();
             }
-
-            var p = new Process();
-            p.StartInfo = new ProcessStartInfo(@"ffmpeg.exe", ffmpegArgs) {
-                UseShellExecute = true     //Used to run in same cmd prompt
-            };
-            p.Start();
-            p.WaitForExit();
-			
-			if (useSS) { TimestampFix(); }
+            catch (Exception ex)
+            {
+                Console.WriteLine("ffmpeg process threw an exception: " + ex.Message);
+            }
+            
+			if (useSS) {
+				try {
+					//TimestampFix();
+				}
+				catch (Exception ex) {
+					Console.WriteLine("TimestampFix method has thrown an exception!\n"+ ex.Message);
+				}
+			}
         }
     }
 	
 	public void TimestampFix() {
 		string ffmpegArgs;
-		ffmpegArgs = "-i \"" + outFile + "\" -c copy -fflags +genpts -y \"/tmp/" + outFile + "\"";
-		
-		var p = new Process();
-            p.StartInfo = new ProcessStartInfo(@"ffmpeg.exe", ffmpegArgs) {
+        ffmpegArgs = "-i \"" + outFile + "\" -c copy -fflags +genpts -y \"/tmp/" + outFile + "\"";
+
+        try
+        {
+            var p = new Process();
+            p.StartInfo = new ProcessStartInfo(@"ffmpeg.exe", ffmpegArgs)
+            {
                 UseShellExecute = true     //Used to run in same cmd prompt
             };
-        p.Start();
-		p.WaitForExit();
-		
-		string newPath = "\\tmp\\" + outFile;
+            p.Start();
+            p.WaitForExit();
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine("TimestampFix ffmpeg process has thrown an exception: " + ex.Message);
+        }
+
+        string newPath = "\\tmp\\" + outFile;
 		string originalPath = ".\\" + outFile;
-
-		if (System.IO.File.Exists(@originalPath)) {
-			try {
-                System.IO.File.Delete(@originalPath);
-            }
-            catch (System.IO.IOException e) {
-                Console.WriteLine(e.Message);
-                return;
-            }
-		}
-
-		System.IO.File.Move(@newPath, @originalPath);
 	}
 	
     private void EstimateFor8MB() {
